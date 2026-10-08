@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>Solana Star Catcher</title>
+<style>
+  :root { --purple:#9945FF; --green:#14F195; --bg:#120a24; --bg2:#1d1040; --text:#f4efff; }
+  * { box-sizing:border-box; margin:0; padding:0; -webkit-tap-highlight-color:transparent; }
+  html, body { height:100%; overflow:hidden; background:var(--bg); color:var(--text);
+    font-family:"Hiragino Sans","Noto Sans JP","Yu Gothic",system-ui,sans-serif; touch-action:manipulation; }
+  #app { position:fixed; inset:0; display:flex; flex-direction:column;
+    padding-top:env(safe-area-inset-top); padding-bottom:env(safe-area-inset-bottom);
+    background:radial-gradient(ellipse at 50% 120%, var(--bg2), var(--bg) 70%); }
+  header { padding:12px 16px 10px; text-align:center; border-bottom:2px solid rgba(153,69,255,.5); }
+  h1 { font-size:clamp(20px,5vw,30px); font-weight:800; letter-spacing:.02em;
+    background:linear-gradient(90deg,var(--purple),var(--green)); -webkit-background-clip:text; background-clip:text; color:transparent; }
+  .hud { display:flex; justify-content:center; gap:28px; margin-top:6px; font-size:clamp(15px,4vw,20px); font-weight:700; }
+  .hud b { color:var(--green); font-variant-numeric:tabular-nums; margin-left:6px; font-size:1.25em; }
+  #time.low { color:#ff6b8a; }
+  #stage { position:relative; flex:1; min-height:0; }
+  canvas { position:absolute; inset:0; width:100%; height:100%; display:block; touch-action:none; cursor:crosshair; }
+  .overlay { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center;
+    gap:14px; padding:24px; text-align:center; background:rgba(18,10,36,.82); }
+  .overlay[hidden] { display:none; }
+  .overlay p { max-width:24em; line-height:1.7; font-size:clamp(14px,3.8vw,17px); }
+  .big { font-size:clamp(44px,14vw,84px); font-weight:800; color:var(--green); line-height:1; font-variant-numeric:tabular-nums; }
+  button { font:inherit; font-weight:800; font-size:clamp(17px,4.5vw,22px); padding:14px 40px; border:0; border-radius:999px; cursor:pointer;
+    color:#120a24; background:linear-gradient(90deg,var(--green),#7dffcf); box-shadow:0 0 0 3px var(--purple), 0 8px 24px rgba(153,69,255,.5); }
+  button:active { transform:scale(.96); }
+  button:focus-visible { outline:3px solid #fff; outline-offset:4px; }
+  #best { color:var(--purple); font-weight:700; filter:brightness(1.5); }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <h1>Solana Star Catcher</h1>
+    <div class="hud">
+      <span>スコア<b id="score">0</b></span>
+      <span>残り時間<b id="time">30</b></span>
+    </div>
+  </header>
+  <div id="stage">
+    <canvas id="cv"></canvas>
+    <div class="overlay" id="startBox">
+      <p>30秒間、落ちてくる星をタップ／クリックして集めよう。<br>小さい星ほど高得点！</p>
+      <button id="startBtn">スタート</button>
+    </div>
+    <div class="overlay" id="endBox" hidden>
+      <p>タイムアップ！</p>
+      <div class="big" id="finalScore">0</div>
+      <p id="best"></p>
+      <button id="againBtn">もう一度</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(() => {
+  const DURATION = 30;
+  const cv = document.getElementById('cv'), ctx = cv.getContext('2d');
+  const $ = id => document.getElementById(id);
+  const scoreEl = $('score'), timeEl = $('time');
+  let W = 0, H = 0, dpr = 1;
+  let stars = [], pops = [], sparks = [];
+  let score = 0, running = false, startT = 0, lastT = 0, spawnAcc = 0;
+  let best = 0;
+  try { best = +localStorage.getItem('ssc_best') || 0; } catch (e) {}
+
+  function resize() {
+    dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const r = cv.getBoundingClientRect();
+    W = r.width; H = r.height;
+    cv.width = W * dpr; cv.height = H * dpr;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  window.addEventListener('resize', resize);
+
+  function spawn(elapsed) {
+    const size = 18 + Math.random() * 26;           // 半径 18-44px
+    const speedBoost = 1 + elapsed / DURATION * 0.8; // 後半ほど速い
+    stars.push({
+      x: size + Math.random() * (W - size * 2),
+      y: -size,
+      r: size,
+      vy: (90 + Math.random() * 110) * speedBoost * (H / 600 > 1 ? 1 : 0.9),
+      rot: Math.random() * Math.PI,
+      vr: (Math.random() - .5) * 2.4,
+      color: Math.random() < .5 ? '#14F195' : '#9945FF',
+      points: Math.round(60 - size) // 小さいほど高得点
+    });
+  }
+
+  function starPath(x, y, r, rot) {
+    ctx.beginPath();
+    for (let i = 0; i < 10; i++) {
+      const a = rot + i * Math.PI / 5 - Math.PI / 2;
+      const rr = i % 2 ? r * .45 : r;
+      ctx.lineTo(x + Math.cos(a) * rr, y + Math.sin(a) * rr);
+    }
+    ctx.closePath();
+  }
+
+  function draw() {
+    ctx.clearRect(0, 0, W, H);
+    for (const s of stars) {
+      ctx.save();
+      ctx.shadowColor = s.color; ctx.shadowBlur = 16;
+      starPath(s.x, s.y, s.r, s.rot);
+      ctx.fillStyle = s.color; ctx.fill();
+      ctx.shadowBlur = 0; ctx.lineWidth = 2; ctx.strokeStyle = 'rgba(255,255,255,.7)'; ctx.stroke();
+      ctx.restore();
+    }
+    for (const p of sparks) {
+      ctx.globalAlpha = Math.max(p.life, 0);
+      ctx.fillStyle = p.color;
+      ctx.fillRect(p.x - 2, p.y - 2, 4, 4);
+    }
+    ctx.globalAlpha = 1;
+    ctx.font = '800 22px system-ui, sans-serif'; ctx.textAlign = 'center';
+    for (const p of pops) {
+      ctx.globalAlpha = Math.max(p.life, 0);
+      ctx.fillStyle = '#fff'; ctx.fillText('+' + p.v, p.x, p.y);
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  function loop(t) {
+    if (!lastT) lastT = t;
+    const dt = Math.min((t - lastT) / 1000, .05); lastT = t;
+    const elapsed = (t - startT) / 1000;
+    const left = Math.max(0, DURATION - elapsed);
+
+    if (running) {
+      spawnAcc += dt * (1.6 + elapsed / DURATION * 1.6); // 1秒あたり約1.6〜3.2個
+      while (spawnAcc >= 1) { spawnAcc--; spawn(elapsed); }
+      timeEl.textContent = Math.ceil(left);
+      timeEl.classList.toggle('low', left <= 5);
+      if (left <= 0) { end(); }
+    }
+    for (const s of stars) { s.y += s.vy * dt; s.rot += s.vr * dt; }
+    stars = stars.filter(s => s.y < H + s.r * 2);
+    for (const p of sparks) { p.x += p.vx * dt; p.y += p.vy * dt; p.life -= dt * 2.2; }
+    sparks = sparks.filter(p => p.life > 0);
+    for (const p of pops) { p.y -= 50 * dt; p.life -= dt * 1.6; }
+    pops = pops.filter(p => p.life > 0);
+
+    draw();
+    requestAnimationFrame(loop);
+  }
+
+  function hit(px, py) {
+    if (!running) return;
+    // 手前（後から出た星）を優先、指でも押しやすいよう当たり判定を少し広げる
+    for (let i = stars.length - 1; i >= 0; i--) {
+      const s = stars[i];
+      const rr = Math.max(s.r * 1.15, 26);
+      if ((px - s.x) ** 2 + (py - s.y) ** 2 <= rr * rr) {
+        stars.splice(i, 1);
+        score += s.points;
+        scoreEl.textContent = score;
+        pops.push({ x: s.x, y: s.y, v: s.points, life: 1 });
+        for (let k = 0; k < 10; k++) {
+          const a = Math.random() * Math.PI * 2, v = 80 + Math.random() * 140;
+          sparks.push({ x: s.x, y: s.y, vx: Math.cos(a) * v, vy: Math.sin(a) * v, life: 1, color: s.color });
+        }
+        return;
+      }
+    }
+  }
+
+  cv.addEventListener('pointerdown', e => {
+    e.preventDefault();
+    const r = cv.getBoundingClientRect();
+    hit(e.clientX - r.left, e.clientY - r.top);
+  });
+
+  function start() {
+    resize();
+    stars = []; pops = []; sparks = []; score = 0; spawnAcc = 0;
+    scoreEl.textContent = '0'; timeEl.textContent = DURATION; timeEl.classList.remove('low');
+    $('startBox').hidden = true; $('endBox').hidden = true;
+    startT = performance.now(); running = true;
+  }
+
+  function end() {
+    running = false;
+    $('finalScore').textContent = score;
+    let msg = '';
+    if (score > best) {
+      best = score;
+      try { localStorage.setItem('ssc_best', best); } catch (e) {}
+      msg = 'ベストスコア更新！';
+    } else {
+      msg = 'ベストスコア：' + best;
+    }
+    $('best').textContent = msg;
+    $('endBox').hidden = false;
+    $('againBtn').focus();
+  }
+
+  $('startBtn').addEventListener('click', start);
+  $('againBtn').addEventListener('click', start);
+  resize();
+  requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
